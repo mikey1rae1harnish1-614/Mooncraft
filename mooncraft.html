@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MoonCraft v3 — Robust Loader</title>
+<style>
+  body { margin:0; overflow:hidden; font-family:system-ui,Segoe UI,Roboto,Arial; background:#111; color:#fff; }
+  canvas { display:block; }
+  #ui, #settingsUI { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; background:rgba(0,0,0,0.6); z-index:60; }
+  #ui h1 { color:#fff; font-size:48px; margin:0 0 20px 0; text-shadow:0 2px 6px #000; }
+  button { padding:10px 18px; margin:8px; border:none; border-radius:8px; font-size:16px; cursor:pointer; background:#333; color:#fff; }
+  #settingsUI { display:none; }
+  #mobileControls { position:fixed; bottom:110px; left:12px; display:none; gap:10px; z-index:50; }
+  .controlCol { display:flex; flex-direction:column; gap:10px; }
+  .controlBtn { width:60px; height:60px; border-radius:50%; background:rgba(255,255,255,0.12); color:#fff; font-size:20px; display:flex; align-items:center; justify-content:center; }
+  #bottomUI { position:fixed; left:50%; transform:translateX(-50%); bottom:10px; display:flex; gap:12px; align-items:flex-end; z-index:55; pointer-events:none; }
+  #inventory, #craftingContainer { pointer-events:auto; display:flex; gap:6px; align-items:center; }
+  .slot { width:54px; height:54px; border-radius:6px; background:rgba(255,255,255,0.06); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; position:relative; user-select:none; }
+  .slot .label { position:absolute; right:4px; bottom:3px; font-size:12px; color:#fff; text-shadow:0 1px 2px #000; pointer-events:none; }
+  .slot.selected { outline:3px solid gold; }
+  #craftingGrid { width:174px; height:174px; background:rgba(0,0,0,0.45); padding:6px; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr); gap:6px; border-radius:8px; }
+  #craftResult { width:70px; height:70px; background:rgba(255,255,255,0.06); border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; }
+  #craftingContainer { align-items:center; gap:12px; display:none; }
+  #craftButton { margin-top:8px; padding:6px 10px; border-radius:6px; background:#246; color:#fff; }
+  #dragItem { position:fixed; pointer-events:none; transform:translate(-50%,-50%); z-index:80; display:none; color:#fff; font-weight:800; text-shadow:0 1px 2px #000; background:rgba(0,0,0,0.3); padding:6px 8px; border-radius:6px; }
+  #miningProgress { position:fixed; left:50%; transform:translateX(-50%); top:12px; width:260px; height:10px; background:rgba(255,255,255,0.12); border-radius:6px; overflow:hidden; display:none; z-index:70; }
+  #miningBar { height:100%; width:0%; background:linear-gradient(90deg,#6cf,#09f); }
+  #hint { position:fixed; left:12px; top:12px; color:#fff; opacity:0.92; z-index:70; font-size:13px; }
+  .slot .durability { position:absolute; left:6px; right:6px; bottom:4px; height:6px; background:rgba(0,0,0,0.35); border-radius:4px; overflow:hidden; pointer-events:none; }
+  .slot .durability .fill { height:100%; width:100%; background:linear-gradient(90deg,#4caf50,#ff5722); transform-origin:left center; transition:width 0.12s linear; }
+  #errorOverlay { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.9); z-index:999; color:#f88; font-size:16px; padding:20px; text-align:left; }
+  @media (max-width:600px){ .slot{ width:46px; height:46px; } #craftingGrid{ width:150px; height:150px; } #bottomUI{ bottom:6px; } }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>MoonCraft</h1>
+  <div>
+    <button id="playBtn">Play</button>
+    <button id="settingsBtn">Settings</button>
+  </div>
+</div>
+
+<div id="settingsUI">
+  <h2 style="color:#fff;margin-bottom:12px">Choose Controls</h2>
+  <div>
+    <button id="pcBtn">PC</button>
+    <button id="mobileBtn">Mobile</button>
+  </div>
+</div>
+
+<div id="hint">Left click: mine • Right click: place • Numbers 1–9: select hotbar • C: toggle crafting</div>
+<div id="miningProgress"><div id="miningBar"></div></div>
+<div id="dragItem"></div>
+
+<div id="mobileControls">
+  <div class="controlCol">
+    <button class="controlBtn" id="upBtn">▲</button>
+    <button class="controlBtn" id="downBtn">▼</button>
+  </div>
+  <div class="controlCol">
+    <button class="controlBtn" id="leftBtn">◀</button>
+    <button class="controlBtn" id="rightBtn">▶</button>
+    <button class="controlBtn" id="jumpBtn">⭡</button>
+  </div>
+</div>
+
+<div id="bottomUI">
+  <div id="inventory"></div>
+  <div id="craftingContainer">
+    <div id="craftingGrid"></div>
+    <div style="display:flex;flex-direction:column;align-items:center;">
+      <div id="craftResult"></div>
+      <button id="craftButton">Craft</button>
+    </div>
+  </div>
+</div>
+
+<div id="errorOverlay"></div>
+
+<!-- programmatically load three.js, then initialize -->
+<script>
+(function loadThreeAndInit(){
+  const THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js";
+  const CONTROLS_CDN = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/PointerLockControls.js";
+
+  function showError(text){
+    const e = document.getElementById('errorOverlay');
+    e.style.display = 'flex';
+    e.innerHTML = '<strong>MoonCraft failed to start</strong><br/><br/>' + text +
+      '<br/><br/>Try opening this file directly in Chrome/Edge (not an editor preview), ensure hardware acceleration is enabled, or open on a different device.';
+  }
+
+  // quick WebGL check
+  const testCanvas = document.createElement('canvas');
+  const gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+  if(!gl){
+    showError('Your browser/device does not support WebGL or it is disabled. Visit https://get.webgl.org to test WebGL support.');
+    return;
+  }
+
+  // load three.js
+  const s = document.createElement('script'); s.src = THREE_CDN; s.onload = () => {
+    // load pointer lock controls
+    const c = document.createElement('script'); c.src = CONTROLS_CDN; c.onload = () => {
+      // both loaded — run main
+      try { startMoonCraft(); } catch(err){ console.error(err); showError('Initialization error: ' + err.message); }
+    };
+    c.onerror = ()=> showError('Failed to load PointerLockControls from CDN. Check your network or open the file with network access.');
+    document.head.appendChild(c);
+  };
+  s.onerror = ()=> showError('Failed to load Three.js from CDN. Check your network or open the file with network access.');
+  document.head.appendChild(s);
+})();
+
+/* ---------- Full game code in a function (runs after three.js loaded) ---------- */
+function startMoonCraft(){
+  // All the robust MoonCraft code below — similar to previous full build but safe to initialize now.
+
+  /* -- Data & recipes -- */
+  let controlType = 'PC';
+  const BLOCKS = [
+    { id:'grass', name:'Grass', color:0x00ff00, tool:'shovel' },
+    { id:'dirt',  name:'Dirt',  color:0x654321, tool:'shovel' },
+    { id:'stone', name:'Stone', color:0x888888, tool:'pickaxe' },
+    { id:'wood',  name:'Wood',  color:0x8B4513, tool:'axe' },
+    { id:'sand',  name:'Sand',  color:0xFFFF66, tool:'shovel' },
+    { id:'coal',  name:'Coal',  color:0x222222, tool:'pickaxe' },
+    { id:'iron',  name:'Iron',  color:0xFF6600, tool:'pickaxe' },
+    { id:'water', name:'Water', color:0x3399FF, tool:null },
+    { id:'stick', name:'Stick', color:0xC2A476, tool:null },
+    { id:'plank', name:'Plank', color:0xD2B48C, tool:null }
+  ];
+  const TOOL_TIERS = { 'Wood':{durability:59}, 'Stone':{durability:131}, 'Iron':{durability:250} };
+
+  const RECIPES = [
+    { name:'Planks x4', pattern:['','','','','wood','','','',''], result:{ type:'blocks', blockId:'plank', count:4 } },
+    { name:'Sticks x4', pattern:['','plank','','','plank','','','',''], result:{ type:'blocks', blockId:'stick', count:4 } },
+    { name:'Wood Pickaxe', pattern:['wood','wood','wood','','stick','','','stick',''], result:{ type:'tool', tier:'Wood', toolType:'Pickaxe' } },
+    { name:'Wood Axe', pattern:['wood','wood','','wood','stick','','','stick',''], result:{ type:'tool', tier:'Wood', toolType:'Axe' } },
+    { name:'Wood Shovel', pattern:['','wood','','','stick','','','stick',''], result:{ type:'tool', tier:'Wood', toolType:'Shovel' } },
+    { name:'Stone Pickaxe', pattern:['stone','stone','stone','','stick','','','stick',''], result:{ type:'tool', tier:'Stone', toolType:'Pickaxe' } },
+    { name:'Stone Axe',    pattern:['stone','stone','','stone','stick','','','stick',''], result:{ type:'tool', tier:'Stone', toolType:'Axe' } },
+    { name:'Stone Shovel', pattern:['','stone','','','stick','','','stick',''], result:{ type:'tool', tier:'Stone', toolType:'Shovel' } },
+    { name:'Iron Pickaxe', pattern:['iron','iron','iron','','stick','','','stick',''], result:{ type:'tool', tier:'Iron', toolType:'Pickaxe' } },
+    { name:'Iron Axe',    pattern:['iron','iron','','iron','stick','','','stick',''], result:{ type:'tool', tier:'Iron', toolType:'Axe' } },
+    { name:'Iron Shovel', pattern:['','iron','','','stick','','','stick',''], result:{ type:'tool', tier:'Iron', toolType:'Shovel' } }
+  ];
+
+  /* -- Inventory -- */
+  const HOTBAR_SIZE = 9;
+  let inventory = new Array(HOTBAR_SIZE).fill(null);
+  let hotbarSelected = 0;
+  function findBlockInfo(id){ return BLOCKS.find(b=>b.id===id) || BLOCKS[0]; }
+  function addToInventory(item){
+    if(item.kind==='block'){
+      for(let i=0;i<HOTBAR_SIZE;i++){ const s = inventory[i]; if(s && s.kind==='block' && s.id===item.id){ s.count = (s.count||0) + (item.count||1); return true; } }
+    }
+    for(let i=0;i<HOTBAR_SIZE;i++){ if(!inventory[i]){ inventory[i] = JSON.parse(JSON.stringify(item)); return true; } }
+    return false;
+  }
+  inventory[0] = { kind:'block', id:'wood', count:8 };
+  inventory[1] = { kind:'block', id:'dirt', count:6 };
+  inventory[2] = { kind:'block', id:'stone', count:4 };
+
+  /* -- UI elements -- */
+  const uiEl = document.getElementById('ui');
+  const settingsUI = document.getElementById('settingsUI');
+  const playBtn = document.getElementById('playBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const pcBtn = document.getElementById('pcBtn');
+  const mobileBtn = document.getElementById('mobileBtn');
+  const inventoryDiv = document.getElementById('inventory');
+  const craftingContainer = document.getElementById('craftingContainer');
+  const craftingGrid = document.getElementById('craftingGrid');
+  const craftResult = document.getElementById('craftResult');
+  const craftButton = document.getElementById('craftButton');
+  const dragItem = document.getElementById('dragItem');
+  const miningProgress = document.getElementById('miningProgress');
+  const miningBar = document.getElementById('miningBar');
+  const mobileControlsDiv = document.getElementById('mobileControls');
+
+  /* menu handlers */
+  playBtn.addEventListener('click', ()=>{ uiEl.style.display='none'; settingsUI.style.display='none'; startGame(); });
+  settingsBtn.addEventListener('click', ()=>{ uiEl.style.display='none'; settingsUI.style.display='flex'; });
+  pcBtn.addEventListener('click', ()=>{ controlType='PC'; settingsUI.style.display='none'; uiEl.style.display='flex'; });
+  mobileBtn.addEventListener('click', ()=>{ controlType='Mobile'; settingsUI.style.display='none'; uiEl.style.display='flex'; });
+
+  /* inventory UI */
+  function createInventoryUI(){ inventoryDiv.innerHTML = ''; for(let i=0;i<HOTBAR_SIZE;i++){ const s=document.createElement('div'); s.className='slot'; s.dataset.idx=i; s.addEventListener('click', onInventoryClick); s.addEventListener('contextmenu', e=>{ e.preventDefault(); onInventoryRightClick(i); }); inventoryDiv.appendChild(s); } }
+  createInventoryUI();
+
+  /* crafting UI */
+  const craftSlots = [];
+  for(let i=0;i<9;i++){ const s=document.createElement('div'); s.className='slot'; s.dataset.idx=i; s.addEventListener('click', onCraftSlotClick); craftingGrid.appendChild(s); craftSlots.push(s); }
+
+  /* render functions */
+  function renderCraftGrid(){ craftSlots.forEach((el,idx)=>{ el.innerHTML=''; const ds = el.dataset.item ? JSON.parse(el.dataset.item):null; if(ds){ if(ds.kind==='block') el.appendChild(document.createTextNode(findBlockInfo(ds.id).name[0])); else if(ds.kind==='tool') el.appendChild(document.createTextNode(ds.toolType[0]||'T')); const lab=document.createElement('div'); lab.className='label'; lab.textContent = ds.count || ds.durability || ''; el.appendChild(lab); } }); }
+  function renderCraftResult(){ craftResult.innerHTML=''; const pat = craftSlots.map(s=> s.dataset.item ? JSON.parse(s.dataset.item):null ); const ids = pat.map(it=> it ? (it.kind==='block'?it.id:(it.kind==='tool'?'tool':'')) : '' ); for(const r of RECIPES){ if(matchPattern(ids, r.pattern)){ craftResult.textContent = r.name; craftResult.dataset.recipe = JSON.stringify(r); return; } } craftResult.textContent=''; delete craftResult.dataset.recipe; }
+  function renderInventory(){ const slots = inventoryDiv.querySelectorAll('.slot'); slots.forEach((el,idx)=>{ el.innerHTML=''; el.classList.toggle('selected', idx===hotbarSelected); const it = inventory[idx]; if(it){ let bg='rgba(255,255,255,0.04)'; let main=''; if(it.kind==='block'){ const bi=findBlockInfo(it.id); bg = '#'+bi.color.toString(16).padStart(6,'0'); main = bi.name[0]; } else if(it.kind==='tool'){ bg = '#b8860b'; main = it.toolType[0]; } el.style.background = `linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.06)), ${bg}`; el.appendChild(document.createTextNode(main)); const label = document.createElement('div'); label.className='label'; label.textContent = it.kind==='block' ? it.count : (it.durability || ''); el.appendChild(label); if(it.kind==='tool'){ if(!it.maxDurability) it.maxDurability = it.durability; const pct = Math.max(0, Math.min(1, it.durability / it.maxDurability)); const durWrap = document.createElement('div'); durWrap.className='durability'; const fill = document.createElement('div'); fill.className='fill'; fill.style.width = (pct*100)+'%'; durWrap.appendChild(fill); el.appendChild(durWrap); } } else { el.style.background = 'rgba(255,255,255,0.04)'; } }); renderCraftGrid(); renderCraftResult(); }
+
+  /* crafting helpers */
+  function matchPattern(ids, pattern){ for(let i=0;i<9;i++){ const a = ids[i] || ''; const b = pattern[i] || ''; if(a !== b) return false; } return true; }
+
+  /* drag/drop */
+  let dragState = null;
+  document.addEventListener('mousemove', e=>{ if(dragState){ dragItem.style.left = e.clientX + 'px'; dragItem.style.top = e.clientY + 'px'; } });
+  function onInventoryClick(e){ const idx = parseInt(this.dataset.idx); const it = inventory[idx]; if(dragState){ if(!inventory[idx]){ inventory[idx] = dragState.item; if(dragState.source==='inv') inventory[dragState.idx] = null; dragState=null; dragItem.style.display='none'; } else { const tmp = inventory[idx]; inventory[idx] = dragState.item; if(dragState.source==='inv') inventory[dragState.idx] = tmp; else { dragState.item = tmp; dragState.source = 'inv'; } renderInventory(); } } else { if(it){ dragState = { source:'inv', idx, item:it }; inventory[idx] = null; dragItem.style.display='block'; dragItem.textContent = it.kind==='block' ? findBlockInfo(it.id).name : (it.toolType + ' (' + it.durability + ')'); } } renderInventory(); }
+  function onInventoryRightClick(i){ hotbarSelected = i; renderInventory(); }
+  function onCraftSlotClick(e){ const idx = parseInt(this.dataset.idx); if(dragState){ const placing = JSON.parse(JSON.stringify(dragState.item)); if(placing.kind==='block' && placing.count > 1){ placing.count = 1; dragState.item.count -= 1; if(dragState.item.count <= 0){ dragState=null; dragItem.style.display='none'; } } else { if(dragState.source === 'inv') inventory[dragState.idx] = null; dragState=null; dragItem.style.display='none'; } this.dataset.item = JSON.stringify(placing); } else { if(this.dataset.item){ const slotItem = JSON.parse(this.dataset.item); const placed = addToInventory(slotItem); if(!placed){ dragState = { source:'craft', idx, item: slotItem }; this.dataset.item = ''; dragItem.style.display='block'; dragItem.textContent = slotItem.kind==='block' ? findBlockInfo(slotItem.id).name : slotItem.toolType; } else { this.dataset.item = ''; } } } renderInventory(); renderCraftGrid(); renderCraftResult(); }
+
+  craftButton.addEventListener('click', ()=>{ if(!craftResult.dataset.recipe) return; const recipe = JSON.parse(craftResult.dataset.recipe); for(let i=0;i<9;i++){ if(recipe.pattern[i] && recipe.pattern[i] !== '') craftSlots[i].dataset.item = ''; } const res = recipe.result; if(res.type === 'tool'){ const tier = res.tier || 'Wood'; const maxD = TOOL_TIERS[tier].durability; const toolItem = { kind:'tool', toolType: res.toolType, durability: maxD, maxDurability: maxD }; addToInventory(toolItem); } else if(res.type === 'blocks'){ addToInventory({ kind:'block', id: res.blockId, count: res.count || 1 }); } renderInventory(); renderCraftGrid(); renderCraftResult(); });
+
+  window.addEventListener('keydown', e=>{ if(e.code.startsWith('Digit')){ const n = parseInt(e.code.slice(5)); if(n>=1 && n<=HOTBAR_SIZE){ hotbarSelected = n-1; renderInventory(); } } if(e.key.toLowerCase() === 'c'){ craftingContainer.style.display = craftingContainer.style.display === 'flex' ? 'none' : 'flex'; } });
+
+  /* tools & mining */
+  const BASE_BREAK_TIME = { 'stone':1800,'coal':2000,'iron':2500,'wood':900,'dirt':600,'grass':700,'sand':600,'plank':400 };
+  const TOOL_EFFECT = { 'Pickaxe': { targets:['stone','coal','iron'], mult:0.28 }, 'Axe': { targets:['wood','plank'], mult:0.25 }, 'Shovel': { targets:['dirt','sand','grass'], mult:0.25 } };
+  function currentTool(){ const cur = inventory[hotbarSelected]; if(!cur) return null; if(cur.kind === 'tool') return cur; return null; }
+  function computeBreakTime(blockId){ if(blockId === 'water') return Infinity; const base = BASE_BREAK_TIME[blockId] || 1500; const tool = currentTool(); if(tool){ const eff = TOOL_EFFECT[tool.toolType]; if(eff && eff.targets.includes(blockId)) return base * eff.mult; return base * 0.6; } return base * 1.7; }
+  function consumeToolAfterUse(){ const t = currentTool(); if(!t) return; t.durability -= 1; if(t.durability <= 0) inventory[hotbarSelected] = null; renderInventory(); }
+
+  /* world (three) */
+  let scene, camera, renderer, controls; let blocksMesh = {}; const CHUNK = 8, RENDER_DIST = 3; let loadedChunks = new Set(); let animalsList = []; let timeOfDay = 0;
+  function addBlockToWorld(x,y,z,id){ const key=`${x},${y},${z}`; if(blocksMesh[key]) return; const info = findBlockInfo(id); const geo = new THREE.BoxGeometry(1,1,1); const mat = new THREE.MeshStandardMaterial({ color: info.color }); const m = new THREE.Mesh(geo, mat); m.position.set(x+0.5,y+0.5,z+0.5); m.userData = { id }; scene.add(m); blocksMesh[key] = m; }
+  function removeBlockFromWorld(x,y,z){ const key=`${x},${y},${z}`; if(!blocksMesh[key]) return false; scene.remove(blocksMesh[key]); delete blocksMesh[key]; return true; }
+  function simpleNoise(x,z){ return Math.floor(Math.abs(Math.sin(x*12.9898+z*78.233))*4); }
+  function generateChunk(cx,cz){ const key=`${cx},${cz}`; if(loadedChunks.has(key)) return; loadedChunks.add(key); const baseX = cx*CHUNK, baseZ = cz*CHUNK; for(let x=0;x<CHUNK;x++){ for(let z=0;z<CHUNK;z++){ const wx=baseX+x, wz=baseZ+z; const h=simpleNoise(wx,wz); for(let y=0;y<=h;y++){ let id = y===h ? 'grass' : (y>=h-2 ? 'dirt' : 'stone'); if(y<h-1 && Math.random()<0.03) id = Math.random()<0.5 ? 'coal' : 'iron'; addBlockToWorld(wx,y,wz,id); } if(h<1 && Math.random()<0.25) addBlockToWorld(wx,0,wz,'water'); if(Math.random()<0.05 && h>0){ addBlockToWorld(wx,h+1,wz,'wood'); addBlockToWorld(wx,h+2,wz,'wood'); addBlockToWorld(wx,h+3,wz,'wood'); addBlockToWorld(wx-1,h+4,wz,'plank'); addBlockToWorld(wx,h+4,wz,'plank'); addBlockToWorld(wx+1,h+4,wz,'plank'); } if(Math.random()<0.02 && h>0){ const geom = new THREE.BoxGeometry(0.5,0.5,0.5); const m = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color:0xffffff })); m.position.set(wx+0.25,h+0.25,wz+0.25); scene.add(m); animalsList.push({ mesh:m, dir:Math.random()*Math.PI*2 }); } } } }
+  function updateChunks(px,pz){ const cx=Math.floor(px/CHUNK), cz=Math.floor(pz/CHUNK); for(let dx=-RENDER_DIST;dx<=RENDER_DIST;dx++){ for(let dz=-RENDER_DIST;dz<=RENDER_DIST;dz++){ generateChunk(cx+dx, cz+dz); } } }
+
+  /* start game */
+  function startGame(){
+    mobileControlsDiv.style.display = controlType==='Mobile' ? 'flex' : 'none';
+    // three
+    scene = new THREE.Scene(); scene.background = new THREE.Color(0x87CEEB);
+    camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 2000); camera.position.set(0,6,0);
+    renderer = new THREE.WebGLRenderer({ antialias:true });
+    // append canvas early and make sure it's visible under UI
+    renderer.domElement.style.zIndex = 1;
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.insertBefore(renderer.domElement, document.body.firstChild);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9); sun.position.set(10,20,10); scene.add(sun);
+    const amb = new THREE.AmbientLight(0x404040); scene.add(amb);
+
+    controls = new THREE.PointerLockControls(camera, renderer.domElement);
+    if(controlType==='PC') renderer.domElement.addEventListener('click', ()=> controls.lock());
+
+    updateChunks(camera.position.x, camera.position.z);
+
+    const raycaster = new THREE.Raycaster(); const mouse=new THREE.Vector2(); let activeMining=null;
+    window.addEventListener('mousemove', e=>{ mouse.x = (e.clientX/innerWidth)*2-1; mouse.y = -(e.clientY/innerHeight)*2+1; });
+
+    renderer.domElement.addEventListener('mousedown', e=>{
+      if(e.button===0){
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(Object.values(blocksMesh));
+        if(intersects && intersects.length>0){
+          const top = intersects[0]; const pos = top.object.position.clone().sub(new THREE.Vector3(0.5,0.5,0.5));
+          const bx=Math.floor(pos.x), by=Math.floor(pos.y), bz=Math.floor(pos.z);
+          const blockId = top.object.userData.id; const dur = computeBreakTime(blockId);
+          if(!isFinite(dur)) return;
+          activeMining = { x:bx,y:by,z:bz,blockId, start:performance.now(), duration:dur };
+          miningProgress.style.display='block'; miningBar.style.width='0%';
+        }
+      }
+      if(e.button===2){
+        e.preventDefault();
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(Object.values(blocksMesh));
+        if(intersects && intersects.length>0){
+          const top = intersects[0]; const face = top.face; const normal = face.normal;
+          const pos = top.object.position.clone().sub(new THREE.Vector3(0.5,0.5,0.5));
+          const tx=Math.round(pos.x+normal.x), ty=Math.round(pos.y+normal.y), tz=Math.round(pos.z+normal.z);
+          const hot = inventory[hotbarSelected];
+          if(hot && hot.kind==='block' && hot.id !== 'water'){ addBlockToWorld(tx,ty,tz, hot.id); hot.count -= 1; if(hot.count<=0) inventory[hotbarSelected]=null; renderInventory(); }
+        }
+      }
+    });
+
+    renderer.domElement.addEventListener('mouseup', e=>{ if(e.button===0 && activeMining){ activeMining=null; miningProgress.style.display='none'; miningBar.style.width='0%'; } });
+
+    function finishMining(m){ const removed = removeBlockFromWorld(m.x,m.y,m.z); if(removed){ if(m.blockId!=='water') addToInventory({ kind:'block', id:m.blockId, count:1 }); consumeToolAfterUse(); renderInventory(); } miningProgress.style.display='none'; miningBar.style.width='0%'; }
+    function animate(){ requestAnimationFrame(animate); timeOfDay += 0.003; const lightness = 0.45 + 0.45*Math.sin(timeOfDay); scene.background = new THREE.Color().setHSL(0.6,0.6,lightness); updateChunks(camera.position.x,camera.position.z); animalsList.forEach(a=>{ a.dir += (Math.random()-0.5)*0.02; a.mesh.position.x += Math.sin(a.dir)*0.01; a.mesh.position.z += Math.cos(a.dir)*0.01; }); if(activeMining){ const now = performance.now(); const elapsed = now - activeMining.start; const pct = Math.min(1, elapsed/activeMining.duration); miningBar.style.width = (pct*100) + '%'; if(elapsed >= activeMining.duration){ finishMining(activeMining); activeMining=null; } } renderer.render(scene, camera); }
+    animate();
+    window.addEventListener('resize', ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+  }
+
+  /* wire minimal mobile controls for UI */
+  function wireMobileControls(){ ['up','down','left','right','jump'].forEach(dir=>{ const el=document.getElementById(dir+'Btn'); if(!el) return; el.addEventListener('touchstart', ()=>{}); el.addEventListener('touchend', ()=>{}); }); }
+  wireMobileControls();
+
+  /* helper debug */
+  window._mc = { addToInventory, findBlockInfo };
+
+  /* initial render */
+  renderInventory(); renderCraftGrid(); renderCraftResult();
+
+  /* functions referenced above (redeclared here so closures exist) */
+  function renderCraftGrid(){ craftSlots.forEach((el,idx)=>{ el.innerHTML=''; const ds = el.dataset.item ? JSON.parse(el.dataset.item):null; if(ds){ if(ds.kind==='block') el.appendChild(document.createTextNode(findBlockInfo(ds.id).name[0])); else if(ds.kind==='tool') el.appendChild(document.createTextNode(ds.toolType[0]||'T')); const lab=document.createElement('div'); lab.className='label'; lab.textContent = ds.count || ds.durability || ''; el.appendChild(lab); } }); }
+  function renderCraftResult(){ craftResult.innerHTML=''; const pat = craftSlots.map(s=> s.dataset.item ? JSON.parse(s.dataset.item) : null); const ids = pat.map(it => it ? (it.kind==='block' ? it.id : (it.kind==='tool' ? 'tool' : '')) : ''); for(const r of RECIPES){ if(matchPattern(ids, r.pattern)){ craftResult.textContent=r.name; craftResult.dataset.recipe = JSON.stringify(r); return; } } craftResult.textContent=''; delete craftResult.dataset.recipe; }
+  function renderInventory(){ const slots = inventoryDiv.querySelectorAll('.slot'); slots.forEach((el,idx)=>{ el.innerHTML=''; el.classList.toggle('selected', idx===hotbarSelected); const it = inventory[idx]; if(it){ let bg='rgba(255,255,255,0.04)'; let main=''; if(it.kind==='block'){ const bi=findBlockInfo(it.id); bg = '#'+bi.color.toString(16).padStart(6,'0'); main = bi.name[0]; } else if(it.kind==='tool'){ bg = '#b8860b'; main = it.toolType[0]; } el.style.background = `linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.06)), ${bg}`; el.appendChild(document.createTextNode(main)); const label=document.createElement('div'); label.className='label'; label.textContent = it.kind==='block' ? it.count : (it.durability || ''); el.appendChild(label); if(it.kind==='tool'){ if(!it.maxDurability) it.maxDurability = it.durability; const pct = Math.max(0, Math.min(1, it.durability / it.maxDurability)); const durWrap=document.createElement('div'); durWrap.className='durability'; const fill=document.createElement('div'); fill.className='fill'; fill.style.width=(pct*100)+'%'; durWrap.appendChild(fill); el.appendChild(durWrap); } } else { el.style.background='rgba(255,255,255,0.04)'; } }); renderCraftGrid(); renderCraftResult(); }
+  function matchPattern(ids, pattern){ for(let i=0;i<9;i++){ const a = ids[i] || ''; const b = pattern[i] || ''; if(a !== b) return false; } return true; }
+
+  let dragState=null;
+  document.addEventListener('mousemove', e=>{ if(dragState){ dragItem.style.left=e.clientX+'px'; dragItem.style.top=e.clientY+'px'; } });
+  function onInventoryClick(e){ const idx=parseInt(this.dataset.idx); const it=inventory[idx]; if(dragState){ if(!inventory[idx]){ inventory[idx]=dragState.item; if(dragState.source==='inv') inventory[dragState.idx]=null; dragState=null; dragItem.style.display='none'; } else { const tmp=inventory[idx]; inventory[idx]=dragState.item; if(dragState.source==='inv') inventory[dragState.idx]=tmp; else { dragState.item = tmp; dragState.source='inv'; } renderInventory(); } } else { if(it){ dragState={ source:'inv', idx, item:it }; inventory[idx]=null; dragItem.style.display='block'; dragItem.textContent = it.kind==='block'?findBlockInfo(it.id).name:(it.toolType+' ('+it.durability+')'); } } renderInventory(); }
+  function onInventoryRightClick(i){ hotbarSelected = i; renderInventory(); }
+  function onCraftSlotClick(e){ const idx=parseInt(this.dataset.idx); if(dragState){ const placing = JSON.parse(JSON.stringify(dragState.item)); if(placing.kind==='block' && placing.count>1){ placing.count = 1; dragState.item.count -= 1; if(dragState.item.count <= 0){ dragState=null; dragItem.style.display='none'; } } else { if(dragState.source==='inv') inventory[dragState.idx] = null; dragState=null; dragItem.style.display='none'; } this.dataset.item = JSON.stringify(placing); } else { if(this.dataset.item){ const slotItem = JSON.parse(this.dataset.item); const placed = addToInventory(slotItem); if(!placed){ dragState = { source:'craft', idx, item: slotItem }; this.dataset.item = ''; dragItem.style.display='block'; dragItem.textContent = slotItem.kind==='block' ? findBlockInfo(slotItem.id).name : slotItem.toolType; } else { this.dataset.item = ''; } } } renderInventory(); renderCraftGrid(); renderCraftResult(); }
+
+  craftButton.addEventListener('click', ()=>{ if(!craftResult.dataset.recipe) return; const recipe = JSON.parse(craftResult.dataset.recipe); for(let i=0;i<9;i++){ if(recipe.pattern[i] && recipe.pattern[i] !== '') craftSlots[i].dataset.item = ''; } const res = recipe.result; if(res.type === 'tool'){ const tier=res.tier||'Wood'; const maxD=TOOL_TIERS[tier].durability; const toolItem={ kind:'tool', toolType:res.toolType, durability:maxD, maxDurability:maxD }; addToInventory(toolItem); } else if(res.type==='blocks'){ addToInventory({ kind:'block', id:res.blockId, count:res.count||1 }); } renderInventory(); renderCraftGrid(); renderCraftResult(); });
+
+  const BASE_BREAK_TIME = { 'stone':1800,'coal':2000,'iron':2500,'wood':900,'dirt':600,'grass':700,'sand':600,'plank':400 };
+  const TOOL_EFFECT = { 'Pickaxe':{targets:['stone','coal','iron'],mult:0.28}, 'Axe':{targets:['wood','plank'],mult:0.25}, 'Shovel':{targets:['dirt','sand','grass'],mult:0.25} };
+  function currentTool(){ const cur = inventory[hotbarSelected]; if(!cur) return null; if(cur.kind==='tool') return cur; return null; }
+  function computeBreakTime(blockId){ if(blockId==='water') return Infinity; const base = BASE_BREAK_TIME[blockId] || 1500; const tool = currentTool(); if(tool){ const eff = TOOL_EFFECT[tool.toolType]; if(eff && eff.targets.includes(blockId)) return base * eff.mult; return base * 0.6; } return base * 1.7; }
+  function consumeToolAfterUse(){ const t = currentTool(); if(!t) return; t.durability -= 1; if(t.durability <= 0) inventory[hotbarSelected] = null; renderInventory(); }
+
+  // finished definition of startMoonCraft
+}
+</script>
+</body>
+</html>
